@@ -1,0 +1,10 @@
+{
+  "name": "GYM Personal Trainer",
+  "short_name": "GYM",
+  "start_url": "/GYM/",
+  "display": "standalone",
+  "background_color": "#0B0F14",
+  "theme_color": "#0B0F14",
+  "lang": "th",
+  "icons": []
+}

@@ -20,6 +20,8 @@ temp/
 
 # Build and dependency outputs
 node_modules/
+.next/
+out/
 dist/
 build/
 coverage/
