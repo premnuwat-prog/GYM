@@ -30,6 +30,7 @@ function makeActive(day: ProgramDay): ActiveWorkout {
 }
 function minutesSince(iso: string) { return Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 60000)) }
 function secondsLabel(value: number) { const s = Math.max(0, value); return `${Math.floor(s / 60).toString().padStart(2, '0')}:${(s % 60).toString().padStart(2, '0')}` }
+function currentWeekStart() { const date = new Date(); const daysFromMonday = (date.getDay() + 6) % 7; date.setDate(date.getDate() - daysFromMonday); return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}` }
 
 export default function Page() {
   const supabase = getSupabase()
@@ -75,9 +76,11 @@ function FitnessApp({ user }: { user: User }) {
   const [measurements, setMeasurements] = useState<Measurement[]>([])
   const [foods, setFoods] = useState<FoodLog[]>([])
   const [sessions, setSessions] = useState<SessionRow[]>([])
+  const [weeklyTarget, setWeeklyTarget] = useState(DEFAULT_PROFILE.workout_days_per_week)
   const [active, setActive] = useState<ActiveWorkout | null>(null)
   const [loading, setLoading] = useState(true)
   const [notice, setNotice] = useState('')
+  const weekStart = currentWeekStart()
 
   useEffect(() => {
     const saved = localStorage.getItem(`gym-active-${user.id}`)
@@ -87,12 +90,14 @@ function FitnessApp({ user }: { user: User }) {
       supabase.from('body_measurements').select('*').eq('user_id', user.id).order('measured_at', { ascending: true }),
       supabase.from('food_logs').select('*').eq('user_id', user.id).gte('logged_at', new Date().toISOString().slice(0, 10)).order('logged_at'),
       supabase.from('workout_sessions').select('id,workout_name_snapshot,started_at,finished_at,duration_minutes,total_volume').eq('user_id', user.id).eq('status', 'completed').order('started_at', { ascending: false }).limit(20),
-    ]).then(async ([p, m, f, s]) => {
+      supabase.from('weekly_training_targets').select('target_days').eq('user_id', user.id).eq('week_start_date', weekStart).maybeSingle(),
+    ]).then(async ([p, m, f, s, w]) => {
       if (p.data) setProfile({ ...DEFAULT_PROFILE, ...p.data })
       else await supabase.from('profiles').insert({ id: user.id, ...DEFAULT_PROFILE })
+      setWeeklyTarget(w.data?.target_days ?? p.data?.workout_days_per_week ?? DEFAULT_PROFILE.workout_days_per_week)
       setMeasurements(m.data ?? []); setFoods(f.data ?? []); setSessions(s.data ?? []); setLoading(false)
     })
-  }, [supabase, user.id])
+  }, [supabase, user.id, weekStart])
   useEffect(() => { if (active) localStorage.setItem(`gym-active-${user.id}`, JSON.stringify(active)); else localStorage.removeItem(`gym-active-${user.id}`) }, [active, user.id])
 
   async function deleteSession(sessionId: string) {
@@ -103,20 +108,30 @@ function FitnessApp({ user }: { user: User }) {
     return null
   }
 
-  const content = loading ? <div className="center"><div className="spinner" /></div> : tab === 'home' ? <Dashboard profile={profile} measurements={measurements} foods={foods} sessions={sessions} active={active} onStart={() => setTab('workout')} onDelete={deleteSession} /> : tab === 'workout' ? <Workout active={active} setActive={setActive} userId={user.id} sessions={sessions} onCompleted={(session) => { setSessions((current) => [session, ...current]); setNotice('บันทึก Workout แล้ว'); setTab('home') }} /> : tab === 'nutrition' ? <Nutrition userId={user.id} foods={foods} setFoods={setFoods} /> : tab === 'progress' ? <Progress userId={user.id} measurements={measurements} setMeasurements={setMeasurements} /> : <ProfileSettings user={user} profile={profile} setProfile={setProfile} />
+  async function saveWeeklyTarget(targetDays: number) {
+    const { error } = await supabase.from('weekly_training_targets').upsert({ user_id: user.id, week_start_date: weekStart, target_days: targetDays, updated_at: new Date().toISOString() }, { onConflict: 'user_id,week_start_date' })
+    if (error) return error.message
+    setWeeklyTarget(targetDays)
+    setNotice(`ตั้งเป้าสัปดาห์นี้ ${targetDays} วันแล้ว`)
+    return null
+  }
+
+  const content = loading ? <div className="center"><div className="spinner" /></div> : tab === 'home' ? <Dashboard profile={profile} measurements={measurements} foods={foods} sessions={sessions} active={active} weeklyTarget={weeklyTarget} onStart={() => setTab('workout')} onDelete={deleteSession} onWeeklyTargetChange={saveWeeklyTarget} /> : tab === 'workout' ? <Workout active={active} setActive={setActive} userId={user.id} sessions={sessions} onCompleted={(session) => { setSessions((current) => [session, ...current]); setNotice('บันทึก Workout แล้ว'); setTab('home') }} /> : tab === 'nutrition' ? <Nutrition userId={user.id} foods={foods} setFoods={setFoods} /> : tab === 'progress' ? <Progress userId={user.id} measurements={measurements} setMeasurements={setMeasurements} /> : <ProfileSettings user={user} profile={profile} setProfile={setProfile} />
   return <div className="app-shell"><header><div><p className="eyebrow">GYM • WEEK {programWeek(profile.program_start_date)}</p><h1>{tabTitle(tab)}</h1></div><div className="avatar"><UserRound size={20} /></div></header>{notice && <button className="toast" onClick={() => setNotice('')}><Check size={16} />{notice}</button>}<main className="content">{content}</main><BottomNav tab={tab} setTab={setTab} /></div>
 }
 function tabTitle(tab: Tab) { return ({ home: 'วันนี้', workout: 'โปรแกรมฝึก', nutrition: 'โภชนาการ', progress: 'ความก้าวหน้า', settings: 'ตั้งค่า' })[tab] }
 function programWeek(start: string) { return Math.min(12, Math.max(1, Math.floor((Date.now() - new Date(start).getTime()) / 604800000) + 1)) }
 
-function Dashboard({ profile, measurements, foods, sessions, active, onStart, onDelete }: { profile: Profile; measurements: Measurement[]; foods: FoodLog[]; sessions: SessionRow[]; active?: ActiveWorkout | null; onStart: () => void; onDelete: (sessionId: string) => Promise<string | null> }) {
+function Dashboard({ profile, measurements, foods, sessions, active, weeklyTarget, onStart, onDelete, onWeeklyTargetChange }: { profile: Profile; measurements: Measurement[]; foods: FoodLog[]; sessions: SessionRow[]; active?: ActiveWorkout | null; weeklyTarget: number; onStart: () => void; onDelete: (sessionId: string) => Promise<string | null>; onWeeklyTargetChange: (targetDays: number) => Promise<string | null> }) {
   const [pendingDelete, setPendingDelete] = useState<SessionRow | null>(null)
   const [deleting, setDeleting] = useState(false)
   const [deleteError, setDeleteError] = useState('')
+  const [targetSaving, setTargetSaving] = useState(false)
+  const [targetError, setTargetError] = useState('')
   const latest = measurements.at(-1)
   const previous = measurements.at(-2)
   const macros = foods.reduce((a, f) => ({ calories: a.calories + Number(f.calories_snapshot), protein: a.protein + Number(f.protein_snapshot), carbs: a.carbs + Number(f.carbs_snapshot), fat: a.fat + Number(f.fat_snapshot) }), { calories: 0, protein: 0, carbs: 0, fat: 0 })
-  const thisWeek = sessions.filter((s) => Date.now() - new Date(s.started_at).getTime() < 604800000).length
+  const thisWeek = sessions.filter((s) => new Date(s.started_at).getTime() >= new Date(`${currentWeekStart()}T00:00:00`).getTime()).length
   const activeDay = active ? PROGRAM[active.day - 1] : null
   const next = activeDay ?? PROGRAM[thisWeek % PROGRAM.length]
   const latestSession = sessions[0]
@@ -129,6 +144,14 @@ function Dashboard({ profile, measurements, foods, sessions, active, onStart, on
     setDeleting(false)
     if (error) setDeleteError(error)
     else setPendingDelete(null)
+  }
+
+  async function updateWeeklyTarget(targetDays: number) {
+    if (targetDays < 1 || targetDays > 7 || targetSaving) return
+    setTargetSaving(true); setTargetError('')
+    const error = await onWeeklyTargetChange(targetDays)
+    setTargetSaving(false)
+    if (error) setTargetError(error)
   }
 
   return <div className="stack dashboard-stack">
@@ -146,8 +169,10 @@ function Dashboard({ profile, measurements, foods, sessions, active, onStart, on
     </section>
 
     <section className="home-section week-section">
-      <div className="home-heading"><h3>สัปดาห์นี้</h3><span>{Math.min(thisWeek, profile.workout_days_per_week)}/{profile.workout_days_per_week} ครั้ง</span></div>
-      <div className="week-track">{Array.from({ length: profile.workout_days_per_week }, (_, index) => <div className={`week-day ${index < thisWeek ? 'done' : ''}`} key={index}><span>{index < thisWeek ? <Check size={15}/> : index + 1}</span><small>Day {index + 1}</small></div>)}</div>
+      <div className="home-heading"><h3>สัปดาห์นี้</h3><span>{thisWeek}/{weeklyTarget} ครั้ง</span></div>
+      <div className="weekly-target-row"><div><b>เป้าหมายสัปดาห์นี้</b><small>ปรับเฉพาะสัปดาห์ปัจจุบัน</small></div><div className="weekly-stepper"><button className="target-step" aria-label="ลดจำนวนวันฝึก" disabled={weeklyTarget <= 1 || targetSaving} onClick={() => updateWeeklyTarget(weeklyTarget - 1)}>−</button><strong>{weeklyTarget} วัน</strong><button className="target-step" aria-label="เพิ่มจำนวนวันฝึก" disabled={weeklyTarget >= 7 || targetSaving} onClick={() => updateWeeklyTarget(weeklyTarget + 1)}>+</button></div></div>
+      {targetError && <p className="error target-error">{targetError}</p>}
+      <div className="week-track">{Array.from({ length: weeklyTarget }, (_, index) => <div className={`week-day ${index < thisWeek ? 'done' : ''}`} key={index}><span>{index < thisWeek ? <Check size={15}/> : index + 1}</span><small>Day {index + 1}</small></div>)}</div>
     </section>
 
     <section className="home-section compact-summary">

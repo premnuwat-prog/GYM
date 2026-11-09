@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 const page = readFileSync(join(process.cwd(), 'src/app/page.tsx'), 'utf8')
@@ -7,6 +7,8 @@ const css = readFileSync(join(process.cwd(), 'src/app/globals.css'), 'utf8')
 const layout = readFileSync(join(process.cwd(), 'src/app/layout.tsx'), 'utf8')
 const dashboard = page.slice(page.indexOf('function Dashboard'), page.indexOf('function Metric'))
 const fitnessApp = page.slice(page.indexOf('function FitnessApp'), page.indexOf('function tabTitle'))
+const weeklyMigrationPath = join(process.cwd(), 'supabase/migrations/202611090003_weekly_training_targets.sql')
+const weeklyMigration = existsSync(weeklyMigrationPath) ? readFileSync(weeklyMigrationPath, 'utf8') : ''
 
 describe('clean white mobile dashboard contract', () => {
   it('uses a light white canvas and matching browser chrome', () => {
@@ -37,5 +39,16 @@ describe('clean white mobile dashboard contract', () => {
     expect(dashboard).toContain('sessions.slice(0, 5)')
     expect(dashboard).toContain('ลบถาวร')
     expect(css).toContain('.history-delete{min-width:44px;min-height:44px')
+  })
+
+  it('stores and edits a separate training-day target for each week', () => {
+    expect(weeklyMigration).toContain('create table if not exists public.weekly_training_targets')
+    expect(weeklyMigration).toContain('check(target_days between 1 and 7)')
+    expect(weeklyMigration).toContain('weekly target owner')
+    expect(fitnessApp).toContain("from('weekly_training_targets')")
+    expect(fitnessApp).toContain("onConflict: 'user_id,week_start_date'")
+    expect(dashboard).toContain('เป้าหมายสัปดาห์นี้')
+    expect(dashboard).toContain('weekly-stepper')
+    expect(css).toContain('.target-step{width:44px;height:44px')
   })
 })
