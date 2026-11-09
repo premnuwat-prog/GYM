@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import type { User } from '@supabase/supabase-js'
-import { Activity, Apple, BarChart3, Camera, Check, ChevronRight, Dumbbell, Home, LogOut, Play, Plus, RotateCcw, Settings, TimerReset, TrendingUp, UserRound } from 'lucide-react'
+import { Activity, Apple, BarChart3, Camera, Check, ChevronRight, Dumbbell, Home, LogOut, Play, Plus, RotateCcw, Settings, TimerReset, Trash2, TrendingUp, UserRound } from 'lucide-react'
 import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
 import { z } from 'zod'
 import { getSupabase } from '@/lib/supabase'
@@ -95,13 +95,24 @@ function FitnessApp({ user }: { user: User }) {
   }, [supabase, user.id])
   useEffect(() => { if (active) localStorage.setItem(`gym-active-${user.id}`, JSON.stringify(active)); else localStorage.removeItem(`gym-active-${user.id}`) }, [active, user.id])
 
-  const content = loading ? <div className="center"><div className="spinner" /></div> : tab === 'home' ? <Dashboard profile={profile} measurements={measurements} foods={foods} sessions={sessions} active={active} onStart={() => setTab('workout')} /> : tab === 'workout' ? <Workout active={active} setActive={setActive} userId={user.id} sessions={sessions} onCompleted={(session) => { setSessions([session, ...sessions]); setNotice('บันทึก Workout แล้ว'); setTab('home') }} /> : tab === 'nutrition' ? <Nutrition userId={user.id} foods={foods} setFoods={setFoods} /> : tab === 'progress' ? <Progress userId={user.id} measurements={measurements} setMeasurements={setMeasurements} /> : <ProfileSettings user={user} profile={profile} setProfile={setProfile} />
+  async function deleteSession(sessionId: string) {
+    const { error } = await supabase.from('workout_sessions').delete().eq('id', sessionId).eq('user_id', user.id)
+    if (error) return error.message
+    setSessions((current) => current.filter((session) => session.id !== sessionId))
+    setNotice('ลบประวัติการฝึกแล้ว')
+    return null
+  }
+
+  const content = loading ? <div className="center"><div className="spinner" /></div> : tab === 'home' ? <Dashboard profile={profile} measurements={measurements} foods={foods} sessions={sessions} active={active} onStart={() => setTab('workout')} onDelete={deleteSession} /> : tab === 'workout' ? <Workout active={active} setActive={setActive} userId={user.id} sessions={sessions} onCompleted={(session) => { setSessions((current) => [session, ...current]); setNotice('บันทึก Workout แล้ว'); setTab('home') }} /> : tab === 'nutrition' ? <Nutrition userId={user.id} foods={foods} setFoods={setFoods} /> : tab === 'progress' ? <Progress userId={user.id} measurements={measurements} setMeasurements={setMeasurements} /> : <ProfileSettings user={user} profile={profile} setProfile={setProfile} />
   return <div className="app-shell"><header><div><p className="eyebrow">GYM • WEEK {programWeek(profile.program_start_date)}</p><h1>{tabTitle(tab)}</h1></div><div className="avatar"><UserRound size={20} /></div></header>{notice && <button className="toast" onClick={() => setNotice('')}><Check size={16} />{notice}</button>}<main className="content">{content}</main><BottomNav tab={tab} setTab={setTab} /></div>
 }
 function tabTitle(tab: Tab) { return ({ home: 'วันนี้', workout: 'โปรแกรมฝึก', nutrition: 'โภชนาการ', progress: 'ความก้าวหน้า', settings: 'ตั้งค่า' })[tab] }
 function programWeek(start: string) { return Math.min(12, Math.max(1, Math.floor((Date.now() - new Date(start).getTime()) / 604800000) + 1)) }
 
-function Dashboard({ profile, measurements, foods, sessions, active, onStart }: { profile: Profile; measurements: Measurement[]; foods: FoodLog[]; sessions: SessionRow[]; active?: ActiveWorkout | null; onStart: () => void }) {
+function Dashboard({ profile, measurements, foods, sessions, active, onStart, onDelete }: { profile: Profile; measurements: Measurement[]; foods: FoodLog[]; sessions: SessionRow[]; active?: ActiveWorkout | null; onStart: () => void; onDelete: (sessionId: string) => Promise<string | null> }) {
+  const [pendingDelete, setPendingDelete] = useState<SessionRow | null>(null)
+  const [deleting, setDeleting] = useState(false)
+  const [deleteError, setDeleteError] = useState('')
   const latest = measurements.at(-1)
   const previous = measurements.at(-2)
   const macros = foods.reduce((a, f) => ({ calories: a.calories + Number(f.calories_snapshot), protein: a.protein + Number(f.protein_snapshot), carbs: a.carbs + Number(f.carbs_snapshot), fat: a.fat + Number(f.fat_snapshot) }), { calories: 0, protein: 0, carbs: 0, fat: 0 })
@@ -110,6 +121,15 @@ function Dashboard({ profile, measurements, foods, sessions, active, onStart }: 
   const next = activeDay ?? PROGRAM[thisWeek % PROGRAM.length]
   const latestSession = sessions[0]
   const weightTrend = latest?.weight_kg && previous?.weight_kg ? latest.weight_kg - previous.weight_kg : null
+
+  async function confirmDelete() {
+    if (!pendingDelete) return
+    setDeleting(true); setDeleteError('')
+    const error = await onDelete(pendingDelete.id)
+    setDeleting(false)
+    if (error) setDeleteError(error)
+    else setPendingDelete(null)
+  }
 
   return <div className="stack dashboard-stack">
     <section className="today-card">
@@ -121,8 +141,8 @@ function Dashboard({ profile, measurements, foods, sessions, active, onStart }: 
     </section>
 
     <section className="home-section latest-session">
-      <div className="home-heading"><h3>ครั้งล่าสุด</h3>{latestSession && <span>{fmt.format(new Date(latestSession.started_at))}</span>}</div>
-      {latestSession ? <div className="session-summary"><div className="session-icon"><Dumbbell size={22}/></div><div><b>{latestSession.workout_name_snapshot}</b><small>{latestSession.duration_minutes ?? 0} นาที · Volume {Math.round(latestSession.total_volume ?? 0).toLocaleString()} kg</small></div><ChevronRight size={19}/></div> : <div className="home-empty"><Dumbbell size={20}/><span>เมื่อฝึกครั้งแรก ผลลัพธ์จะอยู่ตรงนี้</span></div>}
+      <div className="home-heading"><h3>ครั้งล่าสุด</h3>{latestSession && <span>{sessions.length} รายการ</span>}</div>
+      {latestSession ? <div className="history-list">{sessions.slice(0, 5).map((session) => <div className="session-summary" key={session.id}><div className="session-icon"><Dumbbell size={22}/></div><div><b>{session.workout_name_snapshot}</b><small>{fmt.format(new Date(session.started_at))} · {session.duration_minutes ?? 0} นาที · Volume {Math.round(session.total_volume ?? 0).toLocaleString()} kg</small></div><button className="history-delete" aria-label={`ลบประวัติ ${session.workout_name_snapshot}`} onClick={() => { setDeleteError(''); setPendingDelete(session) }}><Trash2 size={18}/></button></div>)}</div> : <div className="home-empty"><Dumbbell size={20}/><span>เมื่อฝึกครั้งแรก ผลลัพธ์จะอยู่ตรงนี้</span></div>}
     </section>
 
     <section className="home-section week-section">
@@ -134,6 +154,7 @@ function Dashboard({ profile, measurements, foods, sessions, active, onStart }: 
       <div className="home-heading"><h3>สรุปวันนี้</h3><span>{Math.round(macros.calories)} / {TARGETS.calories} kcal</span></div>
       <div className="summary-row"><div><small>น้ำหนัก</small><strong>{latest?.weight_kg ? `${latest.weight_kg} kg` : '—'}</strong>{weightTrend !== null && <em>{weightTrend > 0 ? '+' : ''}{weightTrend.toFixed(1)} kg</em>}</div><div><small>รอบเอว</small><strong>{latest?.waist_cm ? `${latest.waist_cm} cm` : '—'}</strong></div><div><small>โปรตีน</small><strong>{Math.round(macros.protein)}g</strong><em>/ {TARGETS.protein}g</em></div></div>
     </section>
+    {pendingDelete && <div className="modal-backdrop" onClick={() => !deleting && setPendingDelete(null)}><div className="modal confirm-modal" role="dialog" aria-modal="true" aria-labelledby="delete-workout-title" onClick={(event) => event.stopPropagation()}><div><p className="eyebrow">ยืนยันการลบประวัติ</p><h3 id="delete-workout-title">ลบ {pendingDelete.workout_name_snapshot}?</h3><p className="muted">เซตและรายการท่าของการฝึกครั้งนี้จะถูกลบถาวร แต่รูปเครื่องและข้อมูลสัดส่วนจะยังอยู่</p></div>{deleteError && <p className="error">{deleteError}</p>}<div className="confirm-actions"><button className="secondary" disabled={deleting} onClick={() => setPendingDelete(null)}>ยกเลิก</button><button className="danger-button" disabled={deleting} onClick={confirmDelete}>{deleting ? 'กำลังลบ…' : 'ลบถาวร'}</button></div></div></div>}
   </div>
 }
 

@@ -6,6 +6,7 @@ const page = readFileSync(join(process.cwd(), 'src/app/page.tsx'), 'utf8')
 const css = readFileSync(join(process.cwd(), 'src/app/globals.css'), 'utf8')
 const layout = readFileSync(join(process.cwd(), 'src/app/layout.tsx'), 'utf8')
 const dashboard = page.slice(page.indexOf('function Dashboard'), page.indexOf('function Metric'))
+const fitnessApp = page.slice(page.indexOf('function FitnessApp'), page.indexOf('function tabTitle'))
 
 describe('clean white mobile dashboard contract', () => {
   it('uses a light white canvas and matching browser chrome', () => {
@@ -27,5 +28,14 @@ describe('clean white mobile dashboard contract', () => {
     expect(dashboard).toContain('active?: ActiveWorkout | null')
     expect(dashboard).toContain('เล่นต่อ')
     expect(dashboard).toContain('เริ่ม Workout')
+  })
+
+  it('lets the owner delete a completed workout after explicit confirmation', () => {
+    expect(fitnessApp).toContain("from('workout_sessions').delete().eq('id', sessionId).eq('user_id', user.id)")
+    expect(fitnessApp).toContain('current.filter((session) => session.id !== sessionId)')
+    expect(dashboard).toContain('ยืนยันการลบประวัติ')
+    expect(dashboard).toContain('sessions.slice(0, 5)')
+    expect(dashboard).toContain('ลบถาวร')
+    expect(css).toContain('.history-delete{min-width:44px;min-height:44px')
   })
 })
