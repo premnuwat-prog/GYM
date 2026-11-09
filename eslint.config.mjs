@@ -5,6 +5,6 @@ import nextTypeScript from 'eslint-config-next/typescript'
 export default defineConfig([
   ...nextVitals,
   ...nextTypeScript,
-  { rules: { 'react-hooks/set-state-in-effect': 'off', 'react-hooks/purity': 'off' } },
+  { rules: { 'react-hooks/set-state-in-effect': 'off', 'react-hooks/purity': 'off', '@next/next/no-img-element': 'off' } },
   globalIgnores(['.next/**', 'out/**', 'node_modules/**', 'next-env.d.ts']),
 ])

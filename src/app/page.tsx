@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import type { User } from '@supabase/supabase-js'
-import { Activity, Apple, BarChart3, Check, ChevronRight, Clock3, Dumbbell, Home, LogOut, Play, Plus, RotateCcw, Settings, TimerReset, TrendingUp, UserRound } from 'lucide-react'
+import { Activity, Apple, BarChart3, Camera, Check, ChevronRight, Clock3, Dumbbell, Home, LogOut, Play, Plus, RotateCcw, Settings, TimerReset, TrendingUp, UserRound } from 'lucide-react'
 import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
 import { z } from 'zod'
 import { getSupabase } from '@/lib/supabase'
@@ -15,7 +15,8 @@ type FoodLog = { id: string; logged_at: string; meal_type: string; food_name_sna
 type SessionRow = { id: string; workout_name_snapshot: string; started_at: string; finished_at: string | null; duration_minutes: number | null; total_volume: number | null }
 type Profile = { height_cm: number; training_level: string; primary_goal: string; workout_days_per_week: number; session_duration_minutes: number; program_start_date: string }
 type SetDraft = { id: string; weight: number; reps: number; rir: number; done: boolean; warmup: boolean; pain: boolean }
-type ActiveWorkout = { day: number; startedAt: string; current: number; sets: Record<string, SetDraft[]> }
+type ActiveWorkout = { day: number; startedAt: string; current: number; sets: Record<string, SetDraft[]>; machines: Record<string, string | null> }
+type ExerciseMachine = { id: string; exercise_key: string; nickname: string; brand: string | null; gym_name: string | null; seat_setting: string | null; notes: string | null; photo_path: string; photoUrl?: string }
 
 const profileSchema = z.object({ height_cm: z.coerce.number().min(100).max(250), workout_days_per_week: z.coerce.number().min(1).max(7), session_duration_minutes: z.coerce.number().min(15).max(240) })
 const measurementSchema = z.object({ weight_kg: z.coerce.number().positive().max(500), waist_cm: z.coerce.number().positive().max(300) })
@@ -25,7 +26,7 @@ const TARGETS = { calories: 2100, protein: 115, carbs: 275, fat: 60 }
 const fmt = new Intl.DateTimeFormat('th-TH', { day: 'numeric', month: 'short' })
 
 function makeActive(day: ProgramDay): ActiveWorkout {
-  return { day: day.day, startedAt: new Date().toISOString(), current: 0, sets: Object.fromEntries(day.exercises.map((exercise) => [exercise.id, Array.from({ length: exercise.sets }, () => ({ id: crypto.randomUUID(), weight: 0, reps: exercise.min, rir: 2, done: false, warmup: false, pain: false }))])) }
+  return { day: day.day, startedAt: new Date().toISOString(), current: 0, sets: Object.fromEntries(day.exercises.map((exercise) => [exercise.id, Array.from({ length: exercise.sets }, () => ({ id: crypto.randomUUID(), weight: 0, reps: exercise.min, rir: 2, done: false, warmup: false, pain: false }))])), machines: {} }
 }
 function minutesSince(iso: string) { return Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 60000)) }
 function secondsLabel(value: number) { const s = Math.max(0, value); return `${Math.floor(s / 60).toString().padStart(2, '0')}:${(s % 60).toString().padStart(2, '0')}` }
@@ -80,7 +81,7 @@ function FitnessApp({ user }: { user: User }) {
 
   useEffect(() => {
     const saved = localStorage.getItem(`gym-active-${user.id}`)
-    if (saved) try { setActive(JSON.parse(saved)) } catch { localStorage.removeItem(`gym-active-${user.id}`) }
+    if (saved) try { const parsed = JSON.parse(saved); setActive({ ...parsed, machines: parsed.machines ?? {} }) } catch { localStorage.removeItem(`gym-active-${user.id}`) }
     Promise.all([
       supabase.from('profiles').select('*').eq('id', user.id).maybeSingle(),
       supabase.from('body_measurements').select('*').eq('user_id', user.id).order('measured_at', { ascending: true }),
@@ -118,10 +119,24 @@ function Workout({ active, setActive, userId, sessions, onCompleted }: { active:
   const [now, setNow] = useState(Date.now())
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
+  const [machines, setMachines] = useState<ExerciseMachine[]>([])
+  const [machineOpen, setMachineOpen] = useState(false)
+  const currentExerciseKey = active ? PROGRAM[active.day - 1]?.exercises[active.current]?.id : null
+  useEffect(() => {
+    if (!currentExerciseKey) { setMachines([]); return }
+    supabase.from('exercise_machines').select('*').eq('user_id', userId).eq('exercise_key', currentExerciseKey).order('last_used_at', { ascending: false, nullsFirst: false }).then(async ({ data }) => {
+      const rows = (data ?? []) as ExerciseMachine[]
+      const withUrls = await Promise.all(rows.map(async (machine) => {
+        const { data: signed } = await supabase.storage.from('machine-photos').createSignedUrl(machine.photo_path, 3600)
+        return { ...machine, photoUrl: signed?.signedUrl }
+      }))
+      setMachines(withUrls)
+    })
+  }, [currentExerciseKey, supabase, userId])
   useEffect(() => { const id = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(id) }, [])
   if (!active) return <div className="stack">{PROGRAM.map((day) => <section className="program-card" key={day.day}><div className="day-number">0{day.day}</div><div><p className="eyebrow">60 MIN • {day.exercises.length} EXERCISES</p><h2>{day.name}</h2><p>{day.focus}</p><div className="exercise-preview">{day.exercises.slice(0, 4).map((e) => <span key={e.id}>{e.en}</span>)}</div><button className="primary" onClick={() => setActive(makeActive(day))}>เริ่ม Day {day.day}<ChevronRight size={18} /></button></div></section>)}</div>
   const day = PROGRAM[active.day - 1]; const exercise = day.exercises[active.current]; const sets = active.sets[exercise.id]
-  function updateSet(index: number, patch: Partial<SetDraft>) { setActive({ day: active!.day, startedAt: active!.startedAt, current: active!.current, sets: { ...active!.sets, [exercise.id]: sets.map((s, i) => i === index ? { ...s, ...patch } : s) } }) }
+  function updateSet(index: number, patch: Partial<SetDraft>) { setActive({ day: active!.day, startedAt: active!.startedAt, current: active!.current, sets: { ...active!.sets, [exercise.id]: sets.map((s, i) => i === index ? { ...s, ...patch } : s) }, machines: active!.machines ?? {} }) }
   function done(index: number) { updateSet(index, { done: !sets[index].done }); if (!sets[index].done) setRestUntil(Date.now() + exercise.rest * 1000) }
   async function finish() {
     setSaving(true); setError('')
@@ -133,7 +148,10 @@ function Workout({ active, setActive, userId, sessions, onCompleted }: { active:
     if (sessionError) { setError(sessionError.message); setSaving(false); return }
     for (let index = 0; index < day.exercises.length; index++) {
       const e = day.exercises[index]
-      const { data: se, error: seError } = await supabase.from('workout_session_exercises').insert({ session_id: session.id, exercise_id: null, sort_order: index, exercise_name_snapshot: e.en, weight_tracking_type_snapshot: 'per_side' }).select().single()
+      const machineId = currentActive.machines?.[e.id] ?? null
+      const { data: machine } = machineId ? await supabase.from('exercise_machines').select('nickname,photo_path').eq('id', machineId).single() : { data: null }
+      const { data: se, error: seError } = await supabase.from('workout_session_exercises').insert({ session_id: session.id, exercise_id: null, sort_order: index, exercise_name_snapshot: e.en, weight_tracking_type_snapshot: 'per_side', machine_id: machineId, machine_name_snapshot: machine?.nickname ?? null, machine_photo_path_snapshot: machine?.photo_path ?? null }).select().single()
+      if (machineId) await supabase.from('exercise_machines').update({ last_used_at: new Date().toISOString() }).eq('id', machineId)
       if (seError) { setError(seError.message); setSaving(false); return }
       const rows = currentActive.sets[e.id].map((s, i) => ({ id: s.id, session_exercise_id: se.id, set_number: i + 1, weight_kg: s.weight, reps: s.reps, rir: s.rir, completed_at: s.done ? new Date().toISOString() : null, is_warmup: s.warmup, technique_ok: true, pain_reported: s.pain }))
       const { error: insertSetError } = await supabase.from('workout_sets').insert(rows); if (insertSetError) { setError(insertSetError.message); setSaving(false); return }
@@ -142,7 +160,43 @@ function Workout({ active, setActive, userId, sessions, onCompleted }: { active:
   }
   const recommendation = recommendProgression({ weight: sets[0]?.weight ?? 0, reps: sets.filter((s) => s.done).map((s) => s.reps), rirs: sets.filter((s) => s.done).map((s) => s.rir), sets: exercise.sets, repMin: exercise.min, repMax: exercise.max, increment: exercise.increment, pain: sets.some((s) => s.pain), techniqueOk: true })
   const remaining = Math.ceil((restUntil - now) / 1000)
-  return <div className="active-workout"><div className="workout-sticky"><div><p className="eyebrow">{active.current + 1}/{day.exercises.length} • {minutesSince(active.startedAt)} MIN</p><h2>{day.name}</h2></div><button className="danger-link" onClick={finish} disabled={saving}>{saving ? 'กำลังบันทึก…' : 'จบการฝึก'}</button></div>{remaining > 0 && <div className="rest-banner"><TimerReset /><div><small>REST TIMER</small><strong>{secondsLabel(remaining)}</strong></div><button onClick={() => setRestUntil(restUntil + 15000)}>+15s</button><button onClick={() => setRestUntil(0)}>ข้าม</button></div>}<section className="exercise-main"><div className="exercise-visual"><Dumbbell size={38} /><span>{exercise.muscle}</span></div><div><p className="eyebrow">{exercise.sets} SETS • {exercise.min}–{exercise.max} REPS • REST {exercise.rest}s</p><h1>{exercise.en}</h1><p>{exercise.th}</p></div></section><div className="set-header"><span>SET</span><span>KG</span><span>REPS</span><span>RIR</span><span>DONE</span></div>{sets.map((set, index) => <div className={`set-row ${set.done ? 'completed' : ''}`} key={set.id}><b>{index + 1}</b><input aria-label={`น้ำหนักเซต ${index + 1}`} type="number" inputMode="decimal" value={set.weight} onChange={(e) => updateSet(index, { weight: Number(e.target.value) })}/><input aria-label={`จำนวนครั้งเซต ${index + 1}`} type="number" inputMode="numeric" value={set.reps} onChange={(e) => updateSet(index, { reps: Number(e.target.value) })}/><input aria-label={`RIR เซต ${index + 1}`} type="number" inputMode="numeric" min="0" max="5" value={set.rir} onChange={(e) => updateSet(index, { rir: Number(e.target.value) })}/><button aria-label={`บันทึกเซต ${index + 1}`} className="done-button" onClick={() => done(index)}>{set.done && <Check />}</button></div>)}<label className="pain-toggle"><input type="checkbox" checked={sets.some((s) => s.pain)} onChange={(e) => setActive({ ...active, sets: { ...active.sets, [exercise.id]: sets.map((s) => ({ ...s, pain: e.target.checked })) } })}/> มีอาการเจ็บจากท่านี้</label><div className={`recommendation ${recommendation.action}`}><TrendingUp /><div><b>คำแนะนำครั้งถัดไป</b><p>{recommendation.reason}{recommendation.action === 'increase' ? ` (${recommendation.recommendedWeight} กก.)` : ''}</p></div></div>{error && <p className="error">{error}</p>}<div className="workout-nav"><button className="secondary" disabled={active.current === 0} onClick={() => setActive({ ...active, current: active.current - 1 })}>ก่อนหน้า</button>{active.current < day.exercises.length - 1 ? <button className="primary" onClick={() => setActive({ ...active, current: active.current + 1 })}>ท่าถัดไป<ChevronRight /></button> : <button className="primary" onClick={finish} disabled={saving}>บันทึก Workout<Check /></button>}</div>{sessions.length > 0 && <p className="muted tiny">Workout ล่าสุด: {fmt.format(new Date(sessions[0].started_at))}</p>}</div>
+  const selectedMachine = machines.find((machine) => machine.id === active.machines?.[exercise.id])
+  function selectMachine(machine: ExerciseMachine) {
+    setActive({ ...active!, machines: { ...(active!.machines ?? {}), [exercise.id]: machine.id } })
+    setMachineOpen(false)
+  }
+  return <div className="active-workout"><div className="workout-sticky"><div><p className="eyebrow">{active.current + 1}/{day.exercises.length} • {minutesSince(active.startedAt)} MIN</p><h2>{day.name}</h2></div><button className="danger-link" onClick={finish} disabled={saving}>{saving ? 'กำลังบันทึก…' : 'จบการฝึก'}</button></div>{remaining > 0 && <div className="rest-banner"><TimerReset /><div><small>REST TIMER</small><strong>{secondsLabel(remaining)}</strong></div><button onClick={() => setRestUntil(restUntil + 15000)}>+15s</button><button onClick={() => setRestUntil(0)}>ข้าม</button></div>}<section className="exercise-main"><div className="exercise-visual machine-visual">{selectedMachine?.photoUrl ? <img src={selectedMachine.photoUrl} alt={selectedMachine.nickname}/> : <><Dumbbell size={38} /><span>{exercise.muscle}</span></>}</div><div><p className="eyebrow">{exercise.sets} SETS • {exercise.min}–{exercise.max} REPS • REST {exercise.rest}s</p><h1>{exercise.en}</h1><p>{exercise.th}</p>{selectedMachine && <small className="machine-label">เครื่อง: {selectedMachine.nickname}{selectedMachine.seat_setting ? ` • เบาะ ${selectedMachine.seat_setting}` : ''}</small>}</div></section><button className="machine-button" onClick={() => setMachineOpen(true)}><Camera size={20}/><div><b>{selectedMachine ? 'เปลี่ยนเครื่อง / ดูรูป' : 'ถ่ายรูปเครื่องนี้'}</b><small>{selectedMachine ? selectedMachine.nickname : 'จำเครื่องและน้ำหนักให้ถูกตัวในครั้งหน้า'}</small></div><ChevronRight size={18}/></button><div className="set-header"><span>SET</span><span>KG</span><span>REPS</span><span>RIR</span><span>DONE</span></div>{sets.map((set, index) => <div className={`set-row ${set.done ? 'completed' : ''}`} key={set.id}><b>{index + 1}</b><input aria-label={`น้ำหนักเซต ${index + 1}`} type="number" inputMode="decimal" value={set.weight} onChange={(e) => updateSet(index, { weight: Number(e.target.value) })}/><input aria-label={`จำนวนครั้งเซต ${index + 1}`} type="number" inputMode="numeric" value={set.reps} onChange={(e) => updateSet(index, { reps: Number(e.target.value) })}/><input aria-label={`RIR เซต ${index + 1}`} type="number" inputMode="numeric" min="0" max="5" value={set.rir} onChange={(e) => updateSet(index, { rir: Number(e.target.value) })}/><button aria-label={`บันทึกเซต ${index + 1}`} className="done-button" onClick={() => done(index)}>{set.done && <Check />}</button></div>)}<label className="pain-toggle"><input type="checkbox" checked={sets.some((s) => s.pain)} onChange={(e) => setActive({ ...active, sets: { ...active.sets, [exercise.id]: sets.map((s) => ({ ...s, pain: e.target.checked })) } })}/> มีอาการเจ็บจากท่านี้</label><div className={`recommendation ${recommendation.action}`}><TrendingUp /><div><b>คำแนะนำครั้งถัดไป</b><p>{recommendation.reason}{recommendation.action === 'increase' ? ` (${recommendation.recommendedWeight} กก.)` : ''}</p></div></div>{error && <p className="error">{error}</p>}<div className="workout-nav"><button className="secondary" disabled={active.current === 0} onClick={() => setActive({ ...active, current: active.current - 1 })}>ก่อนหน้า</button>{active.current < day.exercises.length - 1 ? <button className="primary" onClick={() => setActive({ ...active, current: active.current + 1 })}>ท่าถัดไป<ChevronRight /></button> : <button className="primary" onClick={finish} disabled={saving}>บันทึก Workout<Check /></button>}</div>{sessions.length > 0 && <p className="muted tiny">Workout ล่าสุด: {fmt.format(new Date(sessions[0].started_at))}</p>}{machineOpen && <MachinePicker userId={userId} exerciseKey={exercise.id} machines={machines} onSelect={selectMachine} onCreated={(machine) => { setMachines([machine, ...machines]); selectMachine(machine) }} onClose={() => setMachineOpen(false)}/>}</div>
+}
+
+function MachinePicker({ userId, exerciseKey, machines, onSelect, onCreated, onClose }: { userId: string; exerciseKey: string; machines: ExerciseMachine[]; onSelect: (machine: ExerciseMachine) => void; onCreated: (machine: ExerciseMachine) => void; onClose: () => void }) {
+  const supabase = getSupabase()!
+  const [file, setFile] = useState<File | null>(null)
+  const [preview, setPreview] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+  function chooseFile(next: File | null) {
+    if (!next) return
+    if (!next.type.startsWith('image/')) { setError('กรุณาเลือกไฟล์รูปภาพ'); return }
+    if (next.size > 8 * 1024 * 1024) { setError('รูปต้องมีขนาดไม่เกิน 8 MB'); return }
+    if (preview) URL.revokeObjectURL(preview)
+    setFile(next); setPreview(URL.createObjectURL(next)); setError('')
+  }
+  async function createMachine(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault(); if (!file) { setError('ถ่ายรูปเครื่องก่อนบันทึก'); return }
+    setSaving(true); setError('')
+    const form = new FormData(event.currentTarget)
+    const id = crypto.randomUUID()
+    const extension = file.name.split('.').pop()?.toLowerCase() || 'jpg'
+    const photoPath = `${userId}/${id}/${Date.now()}.${extension}`
+    const { error: uploadError } = await supabase.storage.from('machine-photos').upload(photoPath, file, { contentType: file.type, upsert: false })
+    if (uploadError) { setError(uploadError.message); setSaving(false); return }
+    const row = { id, user_id: userId, exercise_key: exerciseKey, nickname: String(form.get('nickname')), brand: String(form.get('brand') || '') || null, gym_name: String(form.get('gym_name') || '') || null, seat_setting: String(form.get('seat_setting') || '') || null, notes: String(form.get('notes') || '') || null, photo_path: photoPath, last_used_at: new Date().toISOString() }
+    const { data, error: insertError } = await supabase.from('exercise_machines').insert(row).select().single()
+    if (insertError) { await supabase.storage.from('machine-photos').remove([photoPath]); setError(insertError.message); setSaving(false); return }
+    const { data: signed } = await supabase.storage.from('machine-photos').createSignedUrl(photoPath, 3600)
+    setSaving(false); onCreated({ ...(data as ExerciseMachine), photoUrl: signed?.signedUrl })
+  }
+  return <div className="modal-backdrop" onClick={onClose}><div className="modal machine-modal" onClick={(event) => event.stopPropagation()}><SectionTitle title="เลือกหรือถ่ายรูปเครื่อง" action={`${machines.length} เครื่อง`}/>{machines.length > 0 && <div className="machine-list">{machines.map((machine) => <button key={machine.id} className="machine-card" onClick={() => onSelect(machine)}>{machine.photoUrl ? <img src={machine.photoUrl} alt={machine.nickname}/> : <Camera/>}<div><b>{machine.nickname}</b><small>{[machine.brand, machine.gym_name, machine.seat_setting ? `เบาะ ${machine.seat_setting}` : ''].filter(Boolean).join(' • ') || 'แตะเพื่อเลือกเครื่องนี้'}</small></div><ChevronRight/></button>)}</div>}<form className="machine-form" onSubmit={createMachine}><p className="eyebrow">เพิ่มเครื่องใหม่</p><label className="camera-capture">{preview ? <img src={preview} alt="รูปเครื่องใหม่"/> : <><Camera size={32}/><b>เปิดกล้องถ่ายเครื่อง</b><span>ถ่ายให้เห็นตัวเครื่องและแผ่นน้ำหนัก</span></>}<input type="file" accept="image/*" capture="environment" onChange={(event) => chooseFile(event.target.files?.[0] ?? null)}/></label><label>ชื่อเรียกเครื่อง<input name="nickname" required placeholder="เช่น Chest Press ตัวริมหน้าต่าง"/></label><div className="form-grid"><label>ยี่ห้อ<input name="brand" placeholder="Technogym"/></label><label>ตำแหน่งเบาะ<input name="seat_setting" placeholder="เช่น 4"/></label></div><label>ชื่อยิม/สาขา<input name="gym_name" placeholder="เช่น Fitness First พระราม 9"/></label><label>หมายเหตุ<input name="notes" placeholder="เช่น น้ำหนักเครื่องนี้รู้สึกหนักกว่าตัวอื่น"/></label>{error && <p className="error">{error}</p>}<button className="primary full" disabled={saving}>{saving ? 'กำลังอัปโหลด…' : 'บันทึกและใช้เครื่องนี้'}</button></form></div></div>
 }
 
 function Nutrition({ userId, foods, setFoods }: { userId: string; foods: FoodLog[]; setFoods: (f: FoodLog[]) => void }) {
